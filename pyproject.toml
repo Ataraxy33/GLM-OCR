@@ -1,0 +1,103 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glmocr"
+version = "0.1.1"
+description = "GLM OCR - Optical Character Recognition powered by GLM"
+authors = [
+  {name = "ZHIPUAI", email = "info@zhipuai.cn"}
+]
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "Apache-2.0"}
+keywords = ["ocr", "glm", "ai", "vision"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+  "pillow>=9.0.0",
+  "numpy>=1.24.0",
+  "requests>=2.28.0",
+  "pydantic>=2.7.0",
+  "wordfreq>=3.0.0",
+  "PyYAML>=6.0.0",
+
+  # Layout detection
+  "torch>=2.0.0",
+  "torchvision>=0.15.0",
+  "transformers>=4.30.0",
+  "sentencepiece>=0.1.99",
+  "accelerate>=0.20.0",
+  "opencv-python>=4.8.0",
+
+  # PDF support
+  "pypdfium2>=5.3.0",
+
+  # Flask server
+  "flask>=2.3.0",
+]
+
+[project.optional-dependencies]
+layout = [
+  "torch>=2.0.0",
+  "torchvision>=0.15.0",
+  "transformers>=4.30.0",
+  "sentencepiece>=0.1.99",
+  "accelerate>=0.20.0",
+  "opencv-python>=4.8.0",
+]
+
+pdf = [
+  "pypdfium2>=5.3.0",
+]
+
+server = [
+  "flask>=2.3.0",
+]
+
+all = [
+  "torch>=2.0.0",
+  "torchvision>=0.15.0",
+  "transformers>=4.30.0",
+  "sentencepiece>=0.1.99",
+  "accelerate>=0.20.0",
+  "opencv-python>=4.8.0",
+  "pdf2image>=1.16.0",
+  "flask>=2.3.0",
+]
+dev = [
+  "pytest>=7.0.0",
+  "black>=23.0.0",
+  "flake8>=6.0.0",
+  "mypy>=1.0.0",
+]
+
+[project.scripts]
+glmocr = "glmocr.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ZHIPUAI/glm-ocr"
+Repository = "https://github.com/ZHIPUAI/glm-ocr"
+Documentation = "https://github.com/ZHIPUAI/glm-ocr#readme"
+Issues = "https://github.com/ZHIPUAI/glm-ocr/issues"
+
+[tool.setuptools]
+packages = ["glmocr"]
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["glmocr/tests"]
+python_files = ["test_*.py"]
