@@ -217,13 +217,14 @@ def apply_layout_postprocess(
         order_seq = result["order_seq"].cpu().numpy()
         polygon_points = result.get("polygon_points", None)
         if polygon_points is None:
-            polygon_points_np = None
+            polygon_points_seq = None
         else:
-            # Normalize to numpy array if it's a torch tensor / list.
+            # Keep ragged polygons as a sequence (variable number of points).
+            # Only convert per-box to np.array(dtype=float32) when needed.
             if hasattr(polygon_points, "cpu"):
-                polygon_points_np = polygon_points.cpu().numpy()
+                polygon_points_seq = polygon_points.cpu().numpy()
             else:
-                polygon_points_np = np.asarray(polygon_points)
+                polygon_points_seq = polygon_points
         img_size = img_sizes[img_idx]  # (width, height)
 
         def _bbox_to_polygon(x1: float, y1: float, x2: float, y2: float) -> np.ndarray:
@@ -241,9 +242,9 @@ def apply_layout_postprocess(
 
             # Polygon points are optional; fall back to bbox polygon if missing/invalid.
             poly = None
-            if polygon_points_np is not None and i < len(polygon_points_np):
+            if polygon_points_seq is not None and i < len(polygon_points_seq):
                 try:
-                    poly_candidate = np.asarray(polygon_points_np[i], dtype=np.float32)
+                    poly_candidate = np.asarray(polygon_points_seq[i], dtype=np.float32)
                     if poly_candidate.ndim == 2 and poly_candidate.shape[0] >= 3:
                         poly = poly_candidate
                 except Exception:
