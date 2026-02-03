@@ -4,6 +4,7 @@ from typing import List, Dict, Tuple
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import os
+import cv2
 
 
 def get_colormap(rgb: bool = True) -> List[Tuple[int, int, int]]:
@@ -129,7 +130,7 @@ def get_default_font(font_size: int = 20) -> ImageFont.FreeTypeFont:
         # Get the path to the assets folder relative to this file
         current_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(os.path.dirname(current_dir))
-        custom_font_path = os.path.join(project_root, "assets", "PingFang.ttf")
+        custom_font_path = os.path.join(project_root, "resources", "PingFang.ttf")
 
         if os.path.exists(custom_font_path):
             return ImageFont.truetype(custom_font_path, font_size, encoding="utf-8")
@@ -143,6 +144,54 @@ def get_default_font(font_size: int = 20) -> ImageFont.FreeTypeFont:
         return None
 
 
+def _draw_polygon_masks(
+    image: np.ndarray,
+    boxes: List[Dict],
+    label2color: dict,
+    alpha: float = 0.5,
+) -> np.ndarray:
+    """Draw polygon masks on image with alpha blending.
+
+    Args:
+        image: Input image as numpy array (RGB format, float32).
+        boxes: List of detection boxes with polygon_points.
+        label2color: Dictionary mapping labels to colors.
+        alpha: Alpha value for blending (0-1).
+
+    Returns:
+        Image with masks drawn as numpy array.
+    """
+
+    im = image.astype("float32")
+    img_height, img_width = im.shape[:2]
+
+    for i, box_info in enumerate(boxes):
+        polygon_points = box_info.get("polygon_points")
+        if len(polygon_points) < 3:
+            continue
+
+        # Use the same color as label text
+        label = box_info.get("label", "unknown")
+        if label in label2color:
+            color_mask = np.array(label2color[label])
+        else:
+            continue  # Skip if no color assigned
+
+        # Create mask for this polygon
+        mask = np.zeros((img_height, img_width), dtype=np.uint8)
+        polygon = np.array(polygon_points, dtype=np.int32)
+        polygon = polygon.reshape((-1, 1, 2))
+        cv2.fillPoly(mask, [polygon], 1)
+
+        # Apply alpha blending
+        idx = np.nonzero(mask)
+        im[idx[0], idx[1], :] = (1.0 - alpha) * im[
+            idx[0], idx[1], :
+        ] + alpha * color_mask
+
+    return np.uint8(im)
+
+
 def draw_layout_boxes(
     image: np.ndarray,
     boxes: List[Dict],
@@ -151,6 +200,8 @@ def draw_layout_boxes(
     show_index: bool = True,
     thickness_ratio: float = 0.002,
     font_size_ratio: float = 0.018,
+    use_polygon: bool = True,
+    alpha: float = 0.5,
 ) -> Image.Image:
     """Draw layout detection boxes on image with high-quality visualization.
 
@@ -160,24 +211,51 @@ def draw_layout_boxes(
             - 'coordinate': [xmin, ymin, xmax, ymax]
             - 'label': string label
             - 'score': confidence score (0-1)
+            - 'polygon_points': optional list of [x, y] coordinates
+            - 'order': optional reading order
         show_label: Whether to show label text.
         show_score: Whether to show confidence score.
         show_index: Whether to show index number.
         thickness_ratio: Line thickness as ratio of image size.
         font_size_ratio: Font size as ratio of image width.
+        use_polygon: Whether to use polygon visualization when available.
+        alpha: Alpha value for polygon mask blending (0-1).
 
     Returns:
         PIL Image with boxes drawn.
     """
-    # Convert to PIL Image if needed
-    if isinstance(image, np.ndarray):
-        # Convert from RGB to PIL Image
-        img = Image.fromarray(image)
+    # Check if any box has polygon_points
+    has_polygon = use_polygon and any(
+        len(box_info.get("polygon_points", [])) >= 3 for box_info in boxes
+    )
+
+    # Convert to numpy array if needed
+    if isinstance(image, Image.Image):
+        img_array = np.array(image)
     else:
-        img = image
+        img_array = image.copy()
 
     if len(boxes) == 0:
-        return img
+        return Image.fromarray(img_array)
+
+    color_list = get_colormap(rgb=True)
+    num_colors = len(color_list)
+    label2color = {}
+    label2fontcolor = {}
+
+    for i, box_info in enumerate(boxes):
+        label = box_info.get("label", "unknown")
+        if label not in label2color:
+            color_index = i % num_colors
+            label2color[label] = color_list[color_index]
+            label2fontcolor[label] = font_colormap(color_index)
+
+    # Draw polygon masks first if available
+    if has_polygon:
+        img_array = _draw_polygon_masks(img_array, boxes, label2color, alpha)
+
+    # Convert to PIL Image for drawing text
+    img = Image.fromarray(img_array)
 
     # Calculate font size and thickness based on image size
     img_width, img_height = img.size
@@ -189,39 +267,30 @@ def draw_layout_boxes(
 
     # Prepare drawing
     draw = ImageDraw.Draw(img)
-    label2color = {}
-    label2fontcolor = {}
-    color_list = get_colormap(rgb=True)
-    num_colors = len(color_list)
 
     # Draw each box
     for i, box_info in enumerate(boxes):
         label = box_info.get("label", "unknown")
         bbox = box_info.get("coordinate", box_info.get("bbox", None))
         score = box_info.get("score", 1.0)
+        polygon_points = box_info.get("polygon_points")
 
         if bbox is None:
             continue
 
-        # Assign color to label if not already assigned
-        if label not in label2color:
-            color_index = len(label2color) % num_colors
-            label2color[label] = color_list[color_index]
-            label2fontcolor[label] = font_colormap(color_index)
-
-        color = tuple(label2color[label])
-        font_color = tuple(label2fontcolor[label])
+        # Get color from pre-built mapping
+        color = tuple(label2color.get(label, color_list[0]))
+        font_color = tuple(label2fontcolor.get(label, (0, 0, 0)))
 
         # Parse bbox coordinates
-        if len(bbox) == 4:
-            xmin, ymin, xmax, ymax = bbox
-            # Ensure coordinates are within image bounds
-            xmin = max(0, min(int(xmin), img_width - 1))
-            ymin = max(0, min(int(ymin), img_height - 1))
-            xmax = max(0, min(int(xmax), img_width - 1))
-            ymax = max(0, min(int(ymax), img_height - 1))
+        xmin, ymin, xmax, ymax = bbox[:4]
+        xmin = max(0, min(int(xmin), img_width - 1))
+        ymin = max(0, min(int(ymin), img_height - 1))
+        xmax = max(0, min(int(xmax), img_width - 1))
+        ymax = max(0, min(int(ymax), img_height - 1))
 
-            # Draw rectangle
+        # Only draw bbox outline if not using polygon masks
+        if not has_polygon:
             rectangle = [
                 (xmin, ymin),
                 (xmin, ymax),
@@ -229,14 +298,28 @@ def draw_layout_boxes(
                 (xmax, ymin),
                 (xmin, ymin),
             ]
-        else:
-            raise ValueError(
-                f"Only support bbox format of [xmin, ymin, xmax, ymax], "
-                f"got bbox of length {len(bbox)}."
-            )
+            draw.line(rectangle, width=draw_thickness, fill=color)
 
-        # Draw bbox with specified thickness
-        draw.line(rectangle, width=draw_thickness, fill=color)
+        # Determine text anchor position
+        if has_polygon and len(polygon_points) >= 3:
+            # Find left-top and right-top points of polygon
+            image_left_top = (0, 0)
+            image_right_top = (img_width, 0)
+            left_top = min(
+                polygon_points,
+                key=lambda p: (p[0] - image_left_top[0]) ** 2
+                + (p[1] - image_left_top[1]) ** 2,
+            )
+            right_top = min(
+                polygon_points,
+                key=lambda p: (p[0] - image_right_top[0]) ** 2
+                + (p[1] - image_right_top[1]) ** 2,
+            )
+            lx, ly = int(left_top[0]), int(left_top[1])
+            rx, ry = int(right_top[0]), int(right_top[1])
+        else:
+            lx, ly = xmin, ymin
+            rx, ry = xmax, ymin
 
         # Prepare label text
         text_parts = []
@@ -251,47 +334,37 @@ def draw_layout_boxes(
             # Calculate text size
             if font is not None:
                 try:
-                    # For PIL >= 10.0.0
                     bbox_text = draw.textbbox((0, 0), text, font=font)
                     tw = bbox_text[2] - bbox_text[0]
                     th = bbox_text[3] - bbox_text[1] + 4
                 except AttributeError:
-                    # For older PIL versions
                     tw, th = draw.textsize(text, font=font)
             else:
-                # Rough estimation if font is not available
                 tw, th = len(text) * 8, 12
 
             # Draw label background and text
-            if ymin < th:
-                # Draw below the top edge if not enough space above
-                draw.rectangle(
-                    [(xmin, ymin), (xmin + tw + 4, ymin + th + 1)], fill=color
-                )
+            if ly < th:
+                draw.rectangle([(lx, ly), (lx + tw + 4, ly + th + 1)], fill=color)
                 if font is not None:
-                    draw.text((xmin + 2, ymin + 2), text, fill=font_color, font=font)
+                    draw.text((lx + 2, ly + 2), text, fill=font_color, font=font)
             else:
-                # Draw above the bbox
-                draw.rectangle(
-                    [(xmin, ymin - th), (xmin + tw + 4, ymin + 1)], fill=color
-                )
+                draw.rectangle([(lx, ly - th), (lx + tw + 4, ly + 1)], fill=color)
                 if font is not None:
-                    draw.text((xmin + 2, ymin - th), text, fill=font_color, font=font)
+                    draw.text((lx + 2, ly - th - 2), text, fill=font_color, font=font)
 
-        # Draw index number on the right side
+        # Draw order number on the right side
         if show_index:
-            index_text = str(i + 1)
-            text_position = (xmax + 2, ymin - font_size // 2)
+            order_text = str(i + 1)
+            text_position = (rx + 2, ry - font_size // 2)
 
-            # Adjust position if too close to right edge
-            if img_width - xmax < font_size * 1.2:
+            if img_width - rx < font_size * 1.2:
                 text_position = (
-                    int(xmax - font_size * 1.1),
-                    ymin - font_size // 2,
+                    int(rx - font_size * 1.1),
+                    ry - font_size // 2,
                 )
 
             if font is not None:
-                draw.text(text_position, index_text, font=font, fill="red")
+                draw.text(text_position, order_text, font=font, fill="red")
 
     return img
 

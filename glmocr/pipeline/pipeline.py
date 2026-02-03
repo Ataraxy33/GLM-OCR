@@ -627,7 +627,7 @@ class Pipeline:
         ):
             layout_results_dict[img_idx] = layout_result
             for region in layout_result:
-                cropped = crop_image_region(image, region["bbox_2d"])
+                cropped = crop_image_region(image, region["bbox_2d"], region["polygon"])
                 region_queue.put(
                     (
                         "region",
