@@ -221,7 +221,7 @@ def crop_image_region(image, bbox_2d, polygon=None, fill_color=255):
     )
 
     # Create mask and fill polygon
-    mask = np.zeros(img_crop.shape[:2], dtype=np.int32)
+    mask = np.zeros(img_crop.shape[:2], dtype=np.uint8)
     polygon_pixels = polygon_pixels.reshape((-1, 1, 2))
     cv2.fillPoly(mask, [polygon_pixels], 1)
 

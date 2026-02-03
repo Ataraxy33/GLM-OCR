@@ -165,9 +165,16 @@ def _draw_polygon_masks(
     im = image.astype("float32")
     img_height, img_width = im.shape[:2]
 
+    if cv2 is None:
+        return np.uint8(im)
+
     for i, box_info in enumerate(boxes):
         polygon_points = box_info.get("polygon_points")
-        if len(polygon_points) < 3:
+        if polygon_points is None:
+            continue
+
+        polygon = np.asarray(polygon_points)
+        if polygon.shape[0] < 3:
             continue
 
         # Use the same color as label text
@@ -179,8 +186,7 @@ def _draw_polygon_masks(
 
         # Create mask for this polygon
         mask = np.zeros((img_height, img_width), dtype=np.uint8)
-        polygon = np.array(polygon_points, dtype=np.int32)
-        polygon = polygon.reshape((-1, 1, 2))
+        polygon = polygon.astype(np.int32).reshape((-1, 1, 2))
         cv2.fillPoly(mask, [polygon], 1)
 
         # Apply alpha blending

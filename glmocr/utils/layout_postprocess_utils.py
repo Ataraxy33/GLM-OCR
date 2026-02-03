@@ -215,11 +215,23 @@ def apply_layout_postprocess(
         labels = result["labels"].cpu().numpy()
         boxes = result["boxes"].cpu().numpy()
         order_seq = result["order_seq"].cpu().numpy()
-        polygon_points = result["polygon_points"]
+        polygon_points = result.get("polygon_points", None)
+        if polygon_points is None:
+            polygon_points_np = None
+        else:
+            # Normalize to numpy array if it's a torch tensor / list.
+            if hasattr(polygon_points, "cpu"):
+                polygon_points_np = polygon_points.cpu().numpy()
+            else:
+                polygon_points_np = np.asarray(polygon_points)
         img_size = img_sizes[img_idx]  # (width, height)
+
+        def _bbox_to_polygon(x1: float, y1: float, x2: float, y2: float) -> np.ndarray:
+            return np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)
 
         # Build intermediate format: [cls_id, score, x1, y1, x2, y2, order]
         boxes_with_order = []
+        polys_with_order: List[np.ndarray] = []
         for i in range(len(scores)):
             cls_id = int(labels[i])
             score = float(scores[i])
@@ -227,16 +239,31 @@ def apply_layout_postprocess(
             order = int(order_seq[i])
             boxes_with_order.append([cls_id, score, x1, y1, x2, y2, order])
 
+            # Polygon points are optional; fall back to bbox polygon if missing/invalid.
+            poly = None
+            if polygon_points_np is not None and i < len(polygon_points_np):
+                try:
+                    poly_candidate = np.asarray(polygon_points_np[i], dtype=np.float32)
+                    if poly_candidate.ndim == 2 and poly_candidate.shape[0] >= 3:
+                        poly = poly_candidate
+                except Exception:
+                    poly = None
+            if poly is None:
+                poly = _bbox_to_polygon(x1, y1, x2, y2)
+            polys_with_order.append(poly)
+
         if len(boxes_with_order) == 0:
             paddle_format_results.append([])
             continue
 
         boxes_array = np.array(boxes_with_order)
+        polys = polys_with_order
 
         # Apply NMS
         if layout_nms:
             selected_indices = nms(boxes_array[:, :6], iou_same=0.6, iou_diff=0.98)
             boxes_array = boxes_array[selected_indices]
+            polys = [polys[i] for i in selected_indices]
 
         # Filter large images
         filter_large_image = True
@@ -248,7 +275,8 @@ def apply_layout_postprocess(
             image_index = all_labels.index("image") if "image" in all_labels else None
             img_area = img_size[0] * img_size[1]
             filtered_boxes = []
-            for box in boxes_array:
+            filtered_polys: List[np.ndarray] = []
+            for box, poly in zip(boxes_array, polys):
                 label_index, score, xmin, ymin, xmax, ymax = box[:6]
                 if label_index == image_index:
                     xmin = max(0, xmin)
@@ -258,10 +286,13 @@ def apply_layout_postprocess(
                     box_area = (xmax - xmin) * (ymax - ymin)
                     if box_area <= area_thres * img_area:
                         filtered_boxes.append(box)
+                        filtered_polys.append(poly)
                 else:
                     filtered_boxes.append(box)
+                    filtered_polys.append(poly)
             if len(filtered_boxes) > 0:
                 boxes_array = np.array(filtered_boxes)
+                polys = filtered_polys
 
         # Apply merge_bboxes_mode
         if layout_merge_bboxes_mode:
@@ -323,6 +354,7 @@ def apply_layout_postprocess(
                                 contained_by_other == 1
                             )
                 boxes_array = boxes_array[keep_mask]
+                polys = [p for p, keep in zip(polys, keep_mask) if keep]
 
         if len(boxes_array) == 0:
             paddle_format_results.append([])
@@ -331,6 +363,7 @@ def apply_layout_postprocess(
         # Sort by order
         sorted_idx = np.argsort(boxes_array[:, 6])
         boxes_array = boxes_array[sorted_idx]
+        polys = [polys[i] for i in sorted_idx]
 
         # Apply unclip_ratio
         if layout_unclip_ratio:
@@ -357,12 +390,13 @@ def apply_layout_postprocess(
             order = int(box_data[6]) if box_data[6] > 0 else None
             label_name = id2label.get(cls_id, f"class_{cls_id}")
 
-            # Get polygon points by matching coordinates
-            poly = None
-            for orig_idx in range(len(boxes)):
-                if np.allclose(boxes[orig_idx], [x1, y1, x2, y2], atol=1.0):
-                    poly = polygon_points[orig_idx].astype(np.float32)
-                    break
+            poly = polys[i]
+            if (
+                poly is None
+                or np.asarray(poly).ndim != 2
+                or np.asarray(poly).shape[0] < 3
+            ):
+                poly = _bbox_to_polygon(x1, y1, x2, y2)
 
             image_results.append(
                 {
