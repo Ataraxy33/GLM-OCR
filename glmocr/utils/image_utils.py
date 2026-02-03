@@ -1,6 +1,7 @@
 """Image processing utilities."""
 
 import io
+import cv2
 import base64
 import math
 from io import BytesIO
@@ -176,26 +177,60 @@ def load_image_to_base64(
     return image_base64
 
 
-def crop_image_region(image, bbox_2d):
-    """Crop an image region given a normalized bbox.
+def crop_image_region(image, bbox_2d, polygon=None, fill_color=255):
+    """Crop an image region using bbox and optionally mask outside polygon.
 
     Args:
         image: PIL Image
         bbox_2d: [x1_norm, y1_norm, x2_norm, y2_norm] normalized to 0-1000
+        polygon: List of [x, y] coordinates, normalized to 0-1000 (optional)
+                 Example: [[x1, y1], [x2, y2], [x3, y3], [x4, y4], ...]
+                 If None or invalid, only bbox crop is performed.
+        fill_color: Color to fill outside polygon (default 255 for white)
 
     Returns:
-        PIL.Image.Image
+        PIL.Image.Image: Cropped region with optional polygon mask applied
     """
     image_width, image_height = image.size
-    x1_norm, y1_norm, x2_norm, y2_norm = bbox_2d
 
-    # De-normalize to pixel coordinates
+    # De-normalize bbox to pixel coordinates
+    x1_norm, y1_norm, x2_norm, y2_norm = bbox_2d
     x1 = int(x1_norm * image_width / 1000)
     y1 = int(y1_norm * image_height / 1000)
     x2 = int(x2_norm * image_width / 1000)
     y2 = int(y2_norm * image_height / 1000)
 
-    return image.crop((x1, y1, x2, y2))
+    # Simple bbox crop if polygon is invalid
+    if not polygon or len(polygon) < 3:
+        return image.crop((x1, y1, x2, y2))
+
+    # Crop the bbox region first
+    img_array = np.array(image)
+    img_crop = img_array[y1:y2, x1:x2].copy()
+
+    # De-normalize polygon coordinates to pixel coordinates (relative to crop)
+    polygon_pixels = np.array(
+        [
+            [
+                int(point[0] * image_width / 1000) - x1,
+                int(point[1] * image_height / 1000) - y1,
+            ]
+            for point in polygon
+        ],
+        dtype=np.int32,
+    )
+
+    # Create mask and fill polygon
+    mask = np.zeros(img_crop.shape[:2], dtype=np.int32)
+    polygon_pixels = polygon_pixels.reshape((-1, 1, 2))
+    cv2.fillPoly(mask, [polygon_pixels], 1)
+
+    # Apply mask: fill regions outside polygon with fill_color
+    mask = mask.astype(bool)
+    img_crop[~mask] = fill_color
+
+    # Convert back to PIL Image
+    return Image.fromarray(img_crop)
 
 
 def image_tensor_to_base64(image_tensor, image_format):

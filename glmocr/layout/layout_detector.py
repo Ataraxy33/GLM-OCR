@@ -214,12 +214,24 @@ class PPDocLayoutDetector(BaseLayoutDetector):
                 y1_norm = int(float(y1) / image_height * 1000)
                 x2_norm = int(float(x2) / image_width * 1000)
                 y2_norm = int(float(y2) / image_height * 1000)
+
+                # Convert polygon_points to normalized list format
+                poly_array = item["polygon_points"]
+                polygon = [
+                    [
+                        int(float(point[0]) / image_width * 1000),
+                        int(float(point[1]) / image_height * 1000),
+                    ]
+                    for point in poly_array
+                ]
+
                 results.append(
                     {
                         "index": valid_index,
                         "label": label,
                         "score": float(score),
                         "bbox_2d": [x1_norm, y1_norm, x2_norm, y2_norm],
+                        "polygon": polygon,
                         "task_type": task_type,
                     }
                 )

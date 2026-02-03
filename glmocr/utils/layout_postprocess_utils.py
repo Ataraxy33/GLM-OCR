@@ -215,7 +215,7 @@ def apply_layout_postprocess(
         labels = result["labels"].cpu().numpy()
         boxes = result["boxes"].cpu().numpy()
         order_seq = result["order_seq"].cpu().numpy()
-        polygon_points = result.get("polygon_points", [])
+        polygon_points = result["polygon_points"]
         img_size = img_sizes[img_idx]  # (width, height)
 
         # Build intermediate format: [cls_id, score, x1, y1, x2, y2, order]
@@ -357,22 +357,12 @@ def apply_layout_postprocess(
             order = int(box_data[6]) if box_data[6] > 0 else None
             label_name = id2label.get(cls_id, f"class_{cls_id}")
 
-            # Get polygon points (try to find original index)
-            # Since we may have filtered boxes, we need to match by coordinates
+            # Get polygon points by matching coordinates
             poly = None
-            if len(polygon_points) > 0:
-                # Try to find matching polygon by comparing coordinates
-                for orig_idx in range(len(boxes)):
-                    if np.allclose(boxes[orig_idx], [x1, y1, x2, y2], atol=1.0):
-                        if orig_idx < len(polygon_points):
-                            poly = polygon_points[orig_idx].astype(np.float32)
-                        break
-
-            if poly is None:
-                # Fallback: convert box to 4-point polygon
-                poly = np.array(
-                    [[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32
-                )
+            for orig_idx in range(len(boxes)):
+                if np.allclose(boxes[orig_idx], [x1, y1, x2, y2], atol=1.0):
+                    poly = polygon_points[orig_idx].astype(np.float32)
+                    break
 
             image_results.append(
                 {
