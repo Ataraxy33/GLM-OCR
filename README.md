@@ -337,4 +337,4 @@ The GLM-OCR model is released under the MIT License.
 The complete OCR pipeline integrates [PP-DocLayoutV3](https://huggingface.co/PaddlePaddle/PP-DocLayoutV3) for document layout analysis, which is licensed under the Apache License 2.0. Users should comply with both licenses when using this project.
 
 ## Citation
-GLM-OCR technical report is comming soon.
+GLM-OCR technical report is coming soon.
