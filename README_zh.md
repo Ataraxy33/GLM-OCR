@@ -23,6 +23,11 @@ GLM-OCR 是一款面向复杂文档理解的多模态 OCR 模型，基于 GLM-V 
 
 - 上手简单：全面开源，并提供完整 [SDK](https://github.com/zai-org/GLM-OCR) 与推理工具链，支持便捷安装、一行调用、以及与现有生产流程的顺滑集成。
 
+### 最新动态
+
+- **[Coming Soon]** GLM-OCR 技术报告
+- **[2026.2.12]** 基于 LLaMA-Factory 的微调教程上线，详情见： [GLM-OCR 微调教程](examples/finetune/README_zh.md)
+
 ### 下载模型
 
 | 模型    | 下载链接                                                                                                                    | 精度 |

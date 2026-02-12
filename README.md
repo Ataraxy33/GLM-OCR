@@ -23,6 +23,11 @@ GLM-OCR is a multimodal OCR model for complex document understanding, built on t
 
 - **Easy to Use**: Fully open-sourced and equipped with a comprehensive [SDK](https://github.com/zai-org/GLM-OCR) and inference toolchain, offering simple installation, one-line invocation, and smooth integration into existing production pipelines.
 
+### News & Updates
+
+- **[Coming Soon]** GLM-OCR Technical Report
+- **[2026.2.12]** Fine-tuning tutorial based on LLaMA-Factory is now available. See: [GLM-OCR Fine-tuning Guide](examples/finetune/README.md)
+
 ### Download Model
 
 | Model   | Download Links                                                                                                              | Precision |
