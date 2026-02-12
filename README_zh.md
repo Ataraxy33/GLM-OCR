@@ -336,3 +336,6 @@ class MyPipeline:
 GLM-OCR 模型遵循 MIT License。
 
 完整 OCR pipeline 集成了用于文档版面分析的 [PP-DocLayoutV3](https://huggingface.co/PaddlePaddle/PP-DocLayoutV3)，该组件遵循 Apache License 2.0。使用本项目时请同时遵守相关许可证。
+
+## 引用
+GLM-OCR 技术报告即将发布。
