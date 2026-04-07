@@ -32,12 +32,16 @@ def _find_dotenv(start: Optional[Path] = None) -> Optional[Path]:
 # configure the SDK entirely through environment variables / .env files.
 _ENV_MAP: Dict[str, str] = {
     # mode
-    "MODE": "pipeline.maas.enabled",  # "maas" | "selfhosted"
+    "MODE": "pipeline.maas.enabled",  # "maas" | "selfhosted" | "api-platform"
     # MaaS settings
     "API_KEY": "pipeline.maas.api_key",
     "API_URL": "pipeline.maas.api_url",
     "MODEL": "pipeline.maas.model",
     "TIMEOUT": "pipeline.maas.request_timeout",
+    # API Platform settings
+    "API_PLATFORM_API_KEY": "pipeline.api_platform.api_key",
+    "API_PLATFORM_API_URL": "pipeline.api_platform.api_url",
+    "API_PLATFORM_MODEL": "pipeline.api_platform.model",
     # Self-hosted OCR API settings
     "OCR_API_URL": "pipeline.ocr_api.api_url",
     "OCR_API_KEY": "pipeline.ocr_api.api_key",
@@ -147,6 +151,50 @@ class MaaSApiConfig(_BaseConfig):
     connection_pool_size: int = 16
 
 
+class ApiPlatformConfig(_BaseConfig):
+    """Configuration for API Platform remote pipeline.
+
+    Uses the OpenAI-compatible chat completions endpoint with the
+    ``<|PIPELINE_DOCUMENT_RECOGNITION|>`` trigger text to invoke the full
+    pipeline server-side.  The response carries two choices:
+    ``choices[0]`` → JSON result, ``choices[1]`` → Markdown result.
+
+    Bbox values are already in normalised 0-1000 format (same as the
+    self-hosted pipeline), so no coordinate conversion is needed.
+    """
+
+    # Enable API Platform mode
+    enabled: bool = False
+
+    # OpenAI-compatible chat completions endpoint
+    api_url: str = "https://api.zhipuai-infra.cn/v1/chat/completions"
+
+    # Model name served at the endpoint
+    model: str = "tob-glm-ocr-dev-test"
+
+    # API key (Bearer token)
+    api_key: Optional[str] = None
+
+    # SSL verification
+    verify_ssl: bool = True
+
+    # Timeouts (seconds)
+    connect_timeout: int = 30
+    request_timeout: int = 300
+
+    # Retry settings
+    retry_max_attempts: int = 2
+    retry_backoff_base_seconds: float = 0.5
+    retry_backoff_max_seconds: float = 8.0
+    retry_jitter_ratio: float = 0.2
+    retry_status_codes: List[int] = Field(
+        default_factory=lambda: [429, 500, 502, 503, 504]
+    )
+
+    # Connection pool size
+    connection_pool_size: int = 16
+
+
 class PageLoaderConfig(_BaseConfig):
     max_tokens: int = 8192
     temperature: float = 0.0
@@ -232,6 +280,9 @@ class PipelineConfig(_BaseConfig):
     # MaaS mode configuration (Zhipu cloud API passthrough)
     maas: MaaSApiConfig = Field(default_factory=MaaSApiConfig)
 
+    # API Platform remote pipeline (OpenAI chat completions format)
+    api_platform: ApiPlatformConfig = Field(default_factory=ApiPlatformConfig)
+
     page_loader: PageLoaderConfig = Field(default_factory=PageLoaderConfig)
     ocr_api: OCRApiConfig = Field(default_factory=OCRApiConfig)
     result_formatter: ResultFormatterConfig = Field(
@@ -261,6 +312,8 @@ def _coerce_env_value(dotted_path: str, raw: str) -> Any:
     # Boolean fields
     if dotted_path == "pipeline.maas.enabled":
         return raw.strip().lower() in ("maas", "true", "1", "yes")
+    if dotted_path == "pipeline.api_platform.enabled":
+        return raw.strip().lower() in ("api-platform", "api_platform", "true", "1", "yes")
     # Integer fields
     if dotted_path.endswith((".api_port", ".request_timeout", ".connect_timeout")):
         return int(raw)
@@ -424,32 +477,60 @@ class GlmOcrConfig(_BaseConfig):
             _deep_merge(data, env_data)
 
         # 3. Keyword overrides (Python API convenience names)
-        _KW_MAP = {
-            "api_key": "pipeline.maas.api_key",
-            "api_url": "pipeline.maas.api_url",
-            "mode": "pipeline.maas.enabled",
-            "timeout": "pipeline.maas.request_timeout",
-            "log_level": "logging.level",
-            # Self-hosted OCR API
+        # Handle mode specially: "api-platform" enables api_platform and disables maas;
+        # "maas" enables maas; "selfhosted" disables maas.
+        mode_override = overrides.get("mode")
+        if mode_override is not None:
+            m = str(mode_override).strip().lower()
+            if m in ("api-platform", "api_platform"):
+                _set_nested(data, "pipeline.api_platform.enabled", True)
+                _set_nested(data, "pipeline.maas.enabled", False)
+            elif m in ("maas", "true", "1", "yes"):
+                _set_nested(data, "pipeline.maas.enabled", True)
+                _set_nested(data, "pipeline.api_platform.enabled", False)
+            else:  # selfhosted / false / 0
+                _set_nested(data, "pipeline.maas.enabled", False)
+                _set_nested(data, "pipeline.api_platform.enabled", False)
+
+        # When api_key is provided, route it to the active mode's config.
+        if "api_key" in overrides and overrides["api_key"] is not None:
+            key_val = overrides["api_key"]
+            if mode_override is not None and str(mode_override).strip().lower() in ("api-platform", "api_platform"):
+                _set_nested(data, "pipeline.api_platform.api_key", key_val)
+            else:
+                _set_nested(data, "pipeline.maas.api_key", key_val)
+
+        if "api_url" in overrides and overrides["api_url"] is not None:
+            url_val = overrides["api_url"]
+            if mode_override is not None and str(mode_override).strip().lower() in ("api-platform", "api_platform"):
+                _set_nested(data, "pipeline.api_platform.api_url", url_val)
+            else:
+                _set_nested(data, "pipeline.maas.api_url", url_val)
+
+        if "timeout" in overrides and overrides["timeout"] is not None:
+            t_val = int(overrides["timeout"])
+            _set_nested(data, "pipeline.maas.request_timeout", t_val)
+            _set_nested(data, "pipeline.api_platform.request_timeout", t_val)
+
+        if "log_level" in overrides and overrides["log_level"] is not None:
+            _set_nested(data, "logging.level", overrides["log_level"])
+
+        for kw, dotted in {
             "ocr_api_host": "pipeline.ocr_api.api_host",
             "ocr_api_port": "pipeline.ocr_api.api_port",
-            # Layout GPU binding
             "cuda_visible_devices": "pipeline.layout.cuda_visible_devices",
             "layout_device": "pipeline.layout.device",
-        }
-
-        # `model` is shared by both MaaS and self-hosted modes.
-        # Keep MaaS behavior while also forwarding it to OCR API so that
-        # `GlmOcr(mode="selfhosted", model="...")` works as expected.
-        if "model" in overrides and overrides["model"] is not None:
-            model_value = str(overrides["model"])
-            _set_nested(data, "pipeline.maas.model", model_value)
-            _set_nested(data, "pipeline.ocr_api.model", model_value)
-
-        for kw, dotted in _KW_MAP.items():
+        }.items():
             if kw in overrides and overrides[kw] is not None:
                 raw = overrides[kw]
                 _set_nested(data, dotted, _coerce_env_value(dotted, str(raw)))
+
+        # `model` is shared by MaaS, api_platform, and self-hosted modes.
+        if "model" in overrides and overrides["model"] is not None:
+            model_value = str(overrides["model"])
+            _set_nested(data, "pipeline.maas.model", model_value)
+            _set_nested(data, "pipeline.api_platform.model", model_value)
+            _set_nested(data, "pipeline.ocr_api.model", model_value)
 
         # 4. CLI --set overrides (highest priority)
         for dotted, value in overrides.get("_dotted", {}).items():

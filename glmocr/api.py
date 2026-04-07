@@ -2,10 +2,14 @@
 
 Python API for calling the document parsing pipeline from your code.
 
-Two modes are supported:
-1. MaaS Mode (maas.enabled=true): Forwards requests to Zhipu's cloud API.
+Three modes are supported:
+1. MaaS Mode (mode="maas"): Forwards requests to Zhipu's cloud API
+   (``open.bigmodel.cn/api/paas/v4/layout_parsing``).
    No GPU required; the cloud handles all processing.
-2. Self-hosted Mode (maas.enabled=false): Uses local vLLM/SGLang service.
+2. API Platform Mode (mode="api-platform"): Calls the API Platform service
+   via the OpenAI-compatible ``/v1/chat/completions`` endpoint.
+   The full pipeline runs server-side; bboxes are already normalised.
+3. Self-hosted Mode (mode="selfhosted"): Uses a local vLLM/SGLang service.
    Requires GPU; SDK handles layout detection, parallel OCR, etc.
 
 Supported input types: file paths (``str``), ``pathlib.Path``, raw ``bytes``
@@ -13,11 +17,16 @@ Supported input types: file paths (``str``), ``pathlib.Path``, raw ``bytes``
 
 Agent-friendly usage::
 
-    # Only needs ZHIPU_API_KEY in environment (or pass api_key directly)
+    # MaaS — only needs ZHIPU_API_KEY in environment
     from glmocr import GlmOcr
 
     parser = GlmOcr(api_key="sk-xxx", mode="maas")
     result = parser.parse("document.png")
+
+    # API Platform remote pipeline
+    parser = GlmOcr(api_key="ep0W...", mode="api-platform")
+    result = parser.parse("document.png")
+
     result = parser.parse(open("doc.pdf", "rb").read())   # bytes
     print(result.to_dict())
 """
@@ -138,12 +147,28 @@ class GlmOcr:
             format_string=self.config_model.logging.format,
         )
 
-        # Check if MaaS mode is enabled
-        self._use_maas = self.config_model.pipeline.maas.enabled
         self._pipeline = None
         self._maas_client = None
+        self._api_platform_client = None
 
-        if self._use_maas:
+        # API Platform mode takes priority when explicitly enabled.
+        self._use_api_platform = self.config_model.pipeline.api_platform.enabled
+        self._use_maas = (
+            self.config_model.pipeline.maas.enabled and not self._use_api_platform
+        )
+
+        if self._use_api_platform:
+            from glmocr.api_platform_client import ApiPlatformClient
+
+            self._api_platform_client = ApiPlatformClient(
+                self.config_model.pipeline.api_platform
+            )
+            self._api_platform_client.start()
+            logger.info(
+                "GLM-OCR initialized in API Platform mode (%s)",
+                self.config_model.pipeline.api_platform.api_url,
+            )
+        elif self._use_maas:
             # MaaS mode: use MaaSClient for direct API passthrough
             from glmocr.maas_client import MaaSClient
 
@@ -272,7 +297,11 @@ class GlmOcr:
                 **kwargs,
             )
 
-        if self._use_maas:
+        if self._use_api_platform:
+            result_list = self._parse_api_platform(
+                images, save_layout_visualization, **kwargs
+            )
+        elif self._use_maas:
             result_list = self._parse_maas(images, save_layout_visualization, **kwargs)
         else:
             result_list = self._parse_selfhosted(
@@ -291,6 +320,29 @@ class GlmOcr:
         **kwargs: Any,
     ) -> Generator[PipelineResult, None, None]:
         """Internal: yield one PipelineResult per input. Used by parse(stream=True)."""
+        if self._use_api_platform:
+            for image in images:
+                source, display = self._maas_source(image)
+                try:
+                    response = self._api_platform_client.parse(
+                        source,
+                        need_layout_visualization=save_layout_visualization,
+                        **kwargs,
+                    )
+                    result = self._api_platform_response_to_pipeline_result(
+                        response, display
+                    )
+                    yield result
+                except Exception as e:
+                    logger.error("API Platform error for %s: %s", display, e)
+                    result = PipelineResult(
+                        json_result=[],
+                        markdown_result="",
+                        original_images=[display],
+                    )
+                    result._error = str(e)
+                    yield result
+            return
         if self._use_maas:
             if save_layout_visualization:
                 kwargs.setdefault("need_layout_visualization", True)
@@ -345,6 +397,37 @@ class GlmOcr:
                 result._error = str(e)
                 results.append(result)
 
+        return results
+
+    def _parse_api_platform(
+        self,
+        images: List[Union[str, bytes, Path]],
+        save_layout_visualization: bool = False,
+        **kwargs: Any,
+    ) -> List[PipelineResult]:
+        """Parse using the remote API Platform pipeline."""
+        results = []
+        for image in images:
+            source, display = self._maas_source(image)
+            try:
+                response = self._api_platform_client.parse(
+                    source,
+                    need_layout_visualization=save_layout_visualization,
+                    **kwargs,
+                )
+                result = self._api_platform_response_to_pipeline_result(
+                    response, display
+                )
+                results.append(result)
+            except Exception as e:
+                logger.error("API Platform error for %s: %s", display, e)
+                result = PipelineResult(
+                    json_result=[],
+                    markdown_result="",
+                    original_images=[display],
+                )
+                result._error = str(e)
+                results.append(result)
         return results
 
     # ------------------------------------------------------------------
@@ -410,6 +493,58 @@ class GlmOcr:
             return f"![](page={page_idx},bbox={norm})"
 
         return cls._MD_BBOX_RE.sub(_replace, markdown)
+
+    def _api_platform_response_to_pipeline_result(
+        self, response: Dict[str, Any], source: str
+    ) -> PipelineResult:
+        """Convert API Platform chat-completions response to PipelineResult.
+
+        The remote pipeline returns bboxes already in normalised 0-1000
+        format (same schema as the self-hosted pipeline), so no coordinate
+        conversion is needed.  We only need to run ``resolve_image_regions``
+        to crop image-type regions and replace ``![](page=N,bbox=[...])``
+        placeholders with real file references.
+        """
+        import json as _json
+
+        choices = response.get("choices", [])
+        json_str = (
+            choices[0]["message"]["content"] if len(choices) > 0 else "[]"
+        )
+        markdown_result: str = (
+            choices[1]["message"]["content"] if len(choices) > 1 else ""
+        ) or ""
+
+        # Parse JSON result (list-of-pages)
+        if isinstance(json_str, str):
+            try:
+                json_result = _json.loads(json_str)
+            except _json.JSONDecodeError:
+                logger.warning(
+                    "API Platform response: choices[0] is not valid JSON, "
+                    "storing as raw string"
+                )
+                json_result = []
+        else:
+            json_result = json_str if json_str is not None else []
+
+        # Crop image regions and resolve ![](page=N,bbox=[...]) placeholders
+        json_result, markdown_result, image_files = resolve_image_regions(
+            json_result,
+            markdown_result,
+            source,
+        )
+
+        result = PipelineResult(
+            json_result=json_result,
+            markdown_result=markdown_result,
+            original_images=[source],
+            image_files=image_files or None,
+        )
+
+        # Preserve any extra metadata from the response
+        result._usage = response.get("usage", {})
+        return result
 
     def _maas_response_to_pipeline_result(
         self, response: Dict[str, Any], source: str
@@ -582,6 +717,9 @@ class GlmOcr:
         if self._maas_client:
             self._maas_client.stop()
             self._maas_client = None
+        if self._api_platform_client:
+            self._api_platform_client.stop()
+            self._api_platform_client = None
 
     def __enter__(self):
         """Context manager entry."""

@@ -198,8 +198,8 @@ def main():
         "--mode",
         type=str,
         default=None,
-        choices=["maas", "selfhosted"],
-        help="Operation mode: 'maas' (cloud API, default) or 'selfhosted' (local vLLM/SGLang)",
+        choices=["maas", "selfhosted", "api-platform"],
+        help="Operation mode: 'maas' (cloud API), 'api-platform' (infra endpoint), or 'selfhosted' (local vLLM/SGLang)",
     )
     parse_parser.add_argument(
         "--env-file",
